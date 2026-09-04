@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+wwe_ticket_state.json
+wwe_ticket_alert.log
