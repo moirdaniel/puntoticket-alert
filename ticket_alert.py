@@ -4,16 +4,23 @@ import hashlib
 import html
 import json
 import os
+import platform
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import time
-import tkinter as tk
-from tkinter import ttk
 import urllib.error
 import urllib.request
 import webbrowser
+
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except ImportError:
+    tk = None
+    ttk = None
 
 
 # ============================================================
@@ -252,11 +259,20 @@ def crear_huella_de_resultado(resultado):
             }
             for pagina in resultado["pages"]
         ],
-        "errors": resultado["errors"],
     }
 
     texto = json.dumps(datos_importantes, sort_keys=True, ensure_ascii=True)
     return calcular_hash(texto)
+
+
+def obtener_huella_comparable(estado_guardado):
+    if not estado_guardado:
+        return None
+
+    if "pages" in estado_guardado:
+        return crear_huella_de_resultado(estado_guardado)
+
+    return estado_guardado.get("fingerprint")
 
 
 # ============================================================
@@ -287,12 +303,26 @@ def agregar_log(ruta, mensaje):
 # ALERTAS
 # ============================================================
 
-def avisar_en_windows(titulo, mensaje):
+def avisar(titulo, mensaje):
     hacer_sonido()
-    mostrar_notificacion_windows(titulo, mensaje)
+    mostrar_notificacion(titulo, mensaje)
 
 
 def hacer_sonido():
+    sistema = platform.system().lower()
+
+    if sistema == "windows":
+        hacer_sonido_windows()
+        return
+
+    if sistema == "darwin":
+        hacer_sonido_macos()
+        return
+
+    hacer_sonido_linux()
+
+
+def hacer_sonido_windows():
     try:
         import winsound
 
@@ -301,6 +331,33 @@ def hacer_sonido():
             time.sleep(0.15)
     except Exception:
         pass
+
+
+def hacer_sonido_macos():
+    ejecutar_silencioso(["osascript", "-e", "beep 4"])
+
+
+def hacer_sonido_linux():
+    print("\a\a\a\a", end="", flush=True)
+
+    if shutil.which("paplay"):
+        ejecutar_silencioso(["paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga"])
+    elif shutil.which("aplay"):
+        ejecutar_silencioso(["aplay", "/usr/share/sounds/alsa/Front_Center.wav"])
+
+
+def mostrar_notificacion(titulo, mensaje):
+    sistema = platform.system().lower()
+
+    if sistema == "windows":
+        mostrar_notificacion_windows(titulo, mensaje)
+        return
+
+    if sistema == "darwin":
+        mostrar_notificacion_macos(titulo, mensaje)
+        return
+
+    mostrar_notificacion_linux(titulo, mensaje)
 
 
 def mostrar_notificacion_windows(titulo, mensaje):
@@ -318,9 +375,23 @@ def mostrar_notificacion_windows(titulo, mensaje):
         + "$n.Dispose()"
     )
 
+    ejecutar_silencioso(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", comando])
+
+
+def mostrar_notificacion_macos(titulo, mensaje):
+    script = f"display notification {json.dumps(mensaje)} with title {json.dumps(titulo)}"
+    ejecutar_silencioso(["osascript", "-e", script])
+
+
+def mostrar_notificacion_linux(titulo, mensaje):
+    if shutil.which("notify-send"):
+        ejecutar_silencioso(["notify-send", titulo, mensaje])
+
+
+def ejecutar_silencioso(comando):
     try:
         subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", comando],
+            comando,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -423,17 +494,21 @@ def crear_argumentos():
 def ejecutar_revision(args, urls):
     resultado = analizar_todas_las_paginas(urls, args.timeout)
     estado_anterior = cargar_estado(args.state_file)
+    hay_errores = bool(resultado["errors"])
 
     hubo_cambio = (
-        estado_anterior is not None
-        and estado_anterior.get("fingerprint") != resultado["fingerprint"]
+        not hay_errores
+        and estado_anterior is not None
+        and obtener_huella_comparable(estado_anterior) != resultado["fingerprint"]
     )
     debe_alertar = resultado["available"] or hubo_cambio
 
     linea = crear_linea_de_estado(resultado, debe_alertar)
     print(linea, flush=True)
     agregar_log(args.log_file, linea)
-    guardar_estado(args.state_file, resultado)
+
+    if not hay_errores or resultado["available"]:
+        guardar_estado(args.state_file, resultado)
 
     if debe_alertar:
         avisar_y_abrir_pagina(args.open_on_alert, urls[0])
@@ -446,7 +521,7 @@ def ejecutar_revision(args, urls):
 
 
 def avisar_y_abrir_pagina(abrir_pagina, url_a_abrir):
-    avisar_en_windows(
+    avisar(
         "PuntoTicket WWE",
         "Cambio detectado o posible venta disponible. Revisa la pagina ahora.",
     )
@@ -688,6 +763,10 @@ def main():
     urls = URLS_A_REVISAR + (args.urls or [])
 
     if args.gui:
+        if tk is None or ttk is None:
+            print("ERROR: La interfaz grafica requiere Tkinter.")
+            print("Puedes usar el modo consola con: python ticket_alert.py --interval 60")
+            return 2
         MonitorGUI(args).run()
         return 0
 
